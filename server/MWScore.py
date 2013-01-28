@@ -151,7 +151,7 @@ class SocketServer( ScoreModule ):
 					client, address = sock.accept()
 					self.Accepting.append(client)
 					self.AcceptingReaders.append(LineReader(client))
-					self.ScoreServer.Log("New connection from %r", (address,))
+					self.ScoreServer.Log("New connection from %r".format(address))
 				else:
 					# handle the reader that gave us data
 					for v in self.AcceptingReaders:
@@ -181,7 +181,7 @@ class SocketServer( ScoreModule ):
 		msg = msg + '\n'
 		for client in self.Clients:
 			try:
-				client.send( msg )
+				client.send( msg.encode('utf8') )
 			except socket.error, e:
 				self.Clients.remove( client )
 				
