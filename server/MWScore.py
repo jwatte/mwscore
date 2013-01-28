@@ -20,6 +20,34 @@ MATCH_FFA = 2
 
 """
 
+class LineReader(object):
+	""" Read data from a socket and tokenize it into lines of text.
+		Call recv() when select() says the socket is ready.
+		Call readline() until no more lines are returned.
+	"""
+
+	def __init__(self, sock):
+		self.buf = ""
+		self.sock = sock
+
+	def recv(self, size):
+		data = self.sock.recv(size)
+		if data:
+			self.buf = self.buf + data
+
+	def close(self):
+		self.sock.close()
+		self.sock = None
+
+	def readline(self):
+		try:
+			ix = self.buf.index('\n')
+			ret = self.buf[:ix]
+			self.buf = self.buf[ix+1:]
+			return ret
+		except:
+			return None
+
 class ScoreServer():
 
 	def __init__( self ):
@@ -85,6 +113,8 @@ class SocketServer( ScoreModule ):
 		self.Port = port
 		self.Socket = None
 		self.Clients = []
+		self.Accepting = []
+		self.AcceptingReaders = []
 		
 		self.Setup()
 	
@@ -97,6 +127,8 @@ class SocketServer( ScoreModule ):
 			self.Socket.bind( ( self.Host, self.Port ) )
 			self.Socket.listen( 5 )
 			self.ScoreServer.Log( "SocketServer setup succesfull! \r\n" )
+			self.Accepting = [self.Socket]
+			self.AcceptingReaders = []
 			self.StartThread()
 		except:
 			self.ScoreServer.Log( "Setup exception! SocketServer not set up. \r\n" )
@@ -110,28 +142,50 @@ class SocketServer( ScoreModule ):
 				time.sleep( 1 )
 				return
 				
-			(sread, swrite, sexc) = select.select( [self.Socket], [], [], 1 )
+			(sread, swrite, sexc) = select.select( self.Accepting, [], [], 1 )
 			
 			# for each socket with readable data
 			for sock in sread:
 				if sock == self.Socket:
+					# start waiting for the handshake text
 					client, address = sock.accept()
-					if client.recv( 1024 ) == "add me please":
-					
-						# add client to server's client list
-						self.ScoreServer.Log( "new client added" )
-						self.Clients.append( client )
-					else:
-						client.close()
+					self.Accepting.append(client)
+					self.AcceptingReaders.append(LineReader(client))
+					self.ScoreServer.Log("New connection from %r", (address,))
+				else:
+					# handle the reader that gave us data
+					for v in self.AcceptingReaders:
+						if v.sock == sock:
+							try:
+								v.recv(1024)
+							except:
+								v.close()
+								self.AcceptingReaders.remove(v)
+								self.Accepting.remove(sock)
+								break
+							while True:
+								lin = v.readline()
+								if not lin:
+									break
+								if lin == 'add me please':
+									# TODO: when removing the socket from the set I select() on,
+									# it means I won't hear about clients that disconnect until
+									# I try to write to them.
+									self.Accepting.remove(sock)
+									self.AcceptingReaders.remove(v)
+									self.Clients.append(sock)
+									break
 	
 	# Bradcast a message to all of the servers clients. Removes any clients that produce a socket error.
 	def Broadcast( self, msg ):
+		msg = msg + '\n'
 		for client in self.Clients:
 			try:
 				client.send( msg )
 			except socket.error, e:
 				self.Clients.remove( client )
 				
+
 class SocketClient( ScoreModule ):
 
 	def __init__( self, host="192.168.1.102", port=2525 ):
@@ -140,6 +194,7 @@ class SocketClient( ScoreModule ):
 		self.Host = host
 		self.Port = port
 		self.Socket = None
+		self.Reader = None
 		
 		self.MatchTime = 7200
 		self.MatchType = 1
@@ -155,23 +210,29 @@ class SocketClient( ScoreModule ):
 			self.Socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 			self.Socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			self.Socket.connect((self.Host, self.Port))
-			self.Socket.send('add me please')
+			self.Socket.send('add me please\n')
+			self.Reader = LineReader(self.Socket)
 		except:
 			self.Socket = None
+			self.Reader = None
 	
 	# Module's Thread
 	def Run( self ):
 		while not self.ThreadKill:
 		
-			if self.Socket == None:
+			if self.Reader == None:
 				time.sleep( 1 )
 				return
 				
-			try:
-				data = self.Socket.recv(1024)
-			except:
-				time.sleep( 1 )
-				return
+			data = self.Reader.readline()
+			if not data:
+				try:
+					self.Reader.recv(1024)
+				except:
+					self.Reader.close()
+					self.Reader = None
+					self.Socket = None
+					return
 				
 			info = data.split( ":" )
 			
@@ -385,7 +446,7 @@ class Match( ScoreModule ):
 				else:
 					msg = "Team #" + str(self.Teams[0].Number) + " ( "
 					for m in self.Teams[0].Roster:
-						msg += str(m.Name) + " "
+						msg += m.Name + " "
 					msg += ") wins!"
 					
 					self.MatchOver == True
@@ -397,7 +458,7 @@ class Match( ScoreModule ):
 				if self.Teams[0].HP != self.Teams[1].HP:
 					msg = "Team #" + str(self.Teams[0].Number) + " ( "
 					for m in self.Teams[0].Roster:
-						msg += str(m.Name) + " "
+						msg += m.Name + " "
 					msg += ") wins!"
 					
 					self.MatchOver == True
@@ -418,7 +479,7 @@ class Match( ScoreModule ):
 					msg = "Team #" + str(t1.Number) + " ( "
 			
 					for m in t1.Roster:
-						msg += str(m.Name) + " "
+						msg += m.Name + " "
 					msg += ") wins!"
 		
 					self.MatchOver == True
@@ -434,7 +495,7 @@ class Match( ScoreModule ):
 		
 		# MechName and MechHP for each mech in the modules MechList
 		for m in self.MechList:
-			data += ":" + str(m.Name) + ":" + str(m.HP) + ":" + str(m.Team)
+			data += ":" + m.Name + ":" + str(m.HP) + ":" + str(m.Team)
 	
 		return data
 
@@ -463,29 +524,29 @@ class Mech():
 	# Reset the hp of a mech.
 	def ResetHP( self ):
 		self.HP = self.MaxHP
-		return "HP reset on ID# " + str(self.ID) + " " + str(self.Name) + " HP=" + str(self.HP)
+		return "HP reset on ID# " + str(self.ID) + " " + self.Name + " HP=" + str(self.HP)
 		
 	# Assigns a penality to a mech.
 	def AssignPenality( self, ammount=1 ):
 		if self.HP > 0:
 			self.HP -= ammount
-		return str(ammount) + " point penalty assigned to # " + str(self.ID) + " " + str(self.Name) + " HP=" + str(self.HP)
+		return str(ammount) + " point penalty assigned to # " + str(self.ID) + " " + self.Name + " HP=" + str(self.HP)
 	
 	# Assigns a hit to a mech.
 	def AssignHit( self, ammount=1 ):
 		if self.InMatch:
 			if self.HP > 0:
 				self.HP -= ammount
-				return "Hit on #" + str(self.ID) + " " + str(self.Name) + " HP = " + str(self.HP)
+				return "Hit on #" + str(self.ID) + " " + self.Name + " HP = " + str(self.HP)
 			else:
-				return "Hit (ignored, HP already 0) on #" + str(self.ID) + " " + str(self.Name) + " HP = " + str(self.HP)
+				return "Hit (ignored, HP already 0) on #" + str(self.ID) + " " + self.Name + " HP = " + str(self.HP)
 		else:
-			return "Hit (ignored, not in match) on # " + str(self.ID) + " " + str(self.Name) + " HP=" + str(self.HP)
+			return "Hit (ignored, not in match) on # " + str(self.ID) + " " + self.Name + " HP=" + str(self.HP)
 	
 	# Adjusts a mech's HP.
 	def AdjustHP( self, hp ):
 		self.HP = hp
-		return "HP adjusted on ID# " + str(self.ID) + " " + str(self.Name) + " HP=" + str(self.HP)
+		return "HP adjusted on ID# " + str(self.ID) + " " + self.Name + " HP=" + str(self.HP)
 		
 	def __repr__( self ):
 		return repr( (self.ID, self.Name, self.HP) )
@@ -519,7 +580,7 @@ class MechList():
 			# Attempt to creat and instance of mech from the line.	
 			try:
 				info = line.split( ":" )
-				self.List.append( Mech( int(info[0]), info[1], int(info[2]) ) )
+				self.List.append( Mech( int(info[0]), unicode(info[1], 'utf8'), int(info[2]) ) )
 			except:
 				pass
 		

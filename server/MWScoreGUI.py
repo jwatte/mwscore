@@ -246,7 +246,7 @@ class TeamDialog( wx.Dialog ):
 		
 		MechList = []
 		for m in parent.ScoreServer.MechList.List:
-			MechList.append( str(m.ID) + ": " + str(m.Name) )
+			MechList.append( str(m.ID) + ": " + m.Name )
 			
 		self.MechText = wx.StaticText( self, -1, "Mech Selection:" )
 		self.MechChoice = wx.ListBox( self, -1, style=wx.LB_EXTENDED, choices=MechList )			
